@@ -1,6 +1,7 @@
 import os
 import sys
 from example_solution.utils import DataPoint
+import torch as torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -22,30 +23,39 @@ class PositionalEncoding:
 
         return encoding
 
-class AttentionHead(nn.Module):
-    def __init__(self, input_dimensions):
-        super(AttentionHead, self).__init__()
+class MultiHeadAttention(nn.Module):
+    def __init__(self, input_dimensions, num_heads):
+        super(MultiHeadAttention, self).__init__()
         self.input_dimensions = input_dimensions
+        self.num_heads = num_heads
+        self.head_dimensions = input_dimensions / num_heads
+
+        self.attention_heads = nn.ModuleList([AttenionHead(input_dimensions, self.head_dimensions) for i in range (num_heads)])
 
         self.queryWeights = np.random.rand(self.num_heads, self.input_dimensions)
         self.keyWeights = np.random.rand(self.num_heads, self.input_dimensions)
         self.valueWeights = np.random.rand(self.num_heads, self.input_dimensions)
 
     def attentionCalculation(self, input):
-        query = self.queryWeights.dot(input)
-        key = self.keyWeights.dot(input)
-        value = self.valueWeights.dot(input)
+        query = torch.matmul(self.queryWeights, input)
+        key = torch.matmul(self.keyWeights, input)
+        value = torch.matmul(self.valueWeights, input)
 
-        attention_input = np.dot(query, key.T) / np.sqrt(self.input_dimensions)
-        final_attentionValue = F.softmax(attention_input, dim=-1).dot(value)
+        attention_input = torch.matmul(query, key.transpose(-2, self.input_dimensions)) / np.sqrt(self.input_dimensions)
+        final_attentionValue = F.softmax(attention_input, dim=-1)
+
+        output = torch.matmul(final_attentionValue, value)
 
         return final_attentionValue
 
 class Encoder:
     def __init__(self, num_heads, final_input, input_dimensions):
+        super(Encoder, self).__init__()
         self.num_heads = num_heads
         self.final_input = final_input
         self.input_dimensions = input_dimensions
+
+        self.feedForward = nn.Sequential()
 
     def forwardEncoding(self, input):
         attention_heads = [AttentionHead(self.input_dimensions) for _ in range(self.num_heads)]
@@ -64,7 +74,7 @@ class TransformerBlock(nn.module):
     def __init__(self, num_layers, num_heads):
         super(AttentionHead, self).__init__()
 
-        
+
         #layers = [Encoder(self. )]
 
 
