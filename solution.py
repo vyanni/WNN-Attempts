@@ -23,59 +23,91 @@ class PositionalEncoding:
 
         return encoding
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, input_dimensions, num_heads):
-        super(MultiHeadAttention, self).__init__()
+class AttentionHead(nn.Module):
+    def __init__(self, input_dimensions, output_dimensions):
+        super(AttentionHead, self).__init__()
         self.input_dimensions = input_dimensions
-        self.num_heads = num_heads
-        self.head_dimensions = input_dimensions / num_heads
+        self.output_dimensions = output_dimensions
 
-        self.attention_heads = nn.ModuleList([AttenionHead(input_dimensions, self.head_dimensions) for i in range (num_heads)])
+        self.queryWeights = nn.Linear(self.input_dimensions, self.output_dimensions)
+        self.keyWeights = nn.Linear(self.input_dimensions, self.output_dimensions)
+        self.valueWeights = nn.Linear(self.input_dimensions, self.output_dimensions)
 
-        self.queryWeights = np.random.rand(self.num_heads, self.input_dimensions)
-        self.keyWeights = np.random.rand(self.num_heads, self.input_dimensions)
-        self.valueWeights = np.random.rand(self.num_heads, self.input_dimensions)
-
-    def attentionCalculation(self, input):
-        query = torch.matmul(self.queryWeights, input)
-        key = torch.matmul(self.keyWeights, input)
-        value = torch.matmul(self.valueWeights, input)
+    def attentionCalculation(self, marketState):
+        query = torch.matmul(self.queryWeights, marketState)
+        key = torch.matmul(self.keyWeights, marketState)
+        value = torch.matmul(self.valueWeights, marketState)
 
         attention_input = torch.matmul(query, key.transpose(-2, self.input_dimensions)) / np.sqrt(self.input_dimensions)
         final_attentionValue = F.softmax(attention_input, dim=-1)
 
         output = torch.matmul(final_attentionValue, value)
 
-        return final_attentionValue
+        return output
+    
+class MultiheadAttention(nn.Module):
+    def __init__(self, num_heads, input_dimensions, output_dimensions):
+        super(MultiheadAttention, self).__init__()
+        self.input_dimensions = input_dimensions
+        self.num_heads = num_heads
+        self.output_dimensions = output_dimensions
 
-class Encoder:
-    def __init__(self, num_heads, final_input, input_dimensions):
+        self.attention_heads = nn.ModuleList([AttentionHead(self.input_dimensions, self.output_dimensions)] for i in num_heads)
+
+        self.final_linear = nn.Linear(num_heads * output_dimensions, output_dimensions)
+
+    def forwardAttention(self, marketState):
+        outputArray = [head(marketState) for head in self.num_heads]
+        
+        concatenatedHeads = torch.Cat(outputArray, dim=-1)
+        finalOutput = self.final_linear(concatenatedHeads)
+
+        return finalOutput
+
+
+class Encoder(nn.Module):
+    def __init__(self, num_heads, input_dimensions, output_dimensions, feedforward_dimensions):
         super(Encoder, self).__init__()
         self.num_heads = num_heads
-        self.final_input = final_input
         self.input_dimensions = input_dimensions
+        self.output_dimensions = output_dimensions
+        self.feedForward_dimensions = feedforward_dimensions
 
-        self.feedForward = nn.Sequential()
+        self.attention = MultiheadAttention(self.num_heads, self.input_dimensions, self.output_dimensions)
 
-    def forwardEncoding(self, input):
-        attention_heads = [AttentionHead(self.input_dimensions) for _ in range(self.num_heads)]
-        head_outputs = [head.attentionCalculation(input) for head in attention_heads]
-        concatenated_heads = np.concatenate(head_outputs, axis=-1)
+        self.feedForward = nn.Sequential(
+            nn.Linear(output_dimensions, feedforward_dimensions)
+            nn.ReLU()
+            nn.Linear(feedforward_dimensions, output_dimensions)
+        )
+        self.normalizationLayer1 = nn.LayerNorm(output_dimensions)
+        self.normalizationLayer2 = nn.LayerNorm(output_dimensions)
 
-        residual_connections = concatenated_heads + input
+    def forwardEncoding(self, marketState):
+        attentionOutput = self.attention(marketState)
+        attentionOutput = self.normalizationLayer1(attentionOutput + marketState)
 
-        feedForward = nn.ReLU(residual_connections)
-        return feedForward
+        finalAttention = self.feedForward(attentionOutput)
+        finalOutput = self.normalizationLayer2(finalAttention + attentionOutput)
+        return finalOutput
 
 class Decoder:
     def __init__(self):
 
-class TransformerBlock(nn.module):
-    def __init__(self, num_layers, num_heads):
-        super(AttentionHead, self).__init__()
 
+class TransformerBlock(nn.Module):
+    def __init__(self, numLayers, num_heads, input_dimensions, output_dimensions, feedforward_dimensions):
+        super(TransformerBlock, self).__init__()
+        self.numLayers = numLayers
+        self.encoderLayers = nn.ModuleList([Encoder(num_heads, input_dimensions, output_dimensions, feedforward_dimensions)] for i in range numLayers)
 
-        #layers = [Encoder(self. )]
+    def forward(self, marketState):
+        encoderOutput = marketState
+
+        for i in range self.numLayers:
+            encoderOutput = self.encoderLayers[i](encoderOutput)
+        
+        return encoderOutput
 
 
 class PredictionModel:
