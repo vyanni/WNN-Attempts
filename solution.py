@@ -1,6 +1,6 @@
 import os
 import sys
-from example_solution.utils import DataPoint
+from example_solution.utils import DataPoint, ScorerStepByStep
 import torch as torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,55 +9,67 @@ import numpy as np
 import pandas as pd
 
 class PositionalEncoding:
-    def __init__(self, num_dimensions = 32, pos = 0):
-        self.num_dimensions = num_dimensions
-        self.pos = pos
+    def __init__(self, dimensionSize = 32, timeLength = 100):
+        self.dimensionSize = dimensionSize
+        self.timeLength = timeLength
+
+        self.encodingVector = self.encodingStep()
+        #Takes in the dimension size of 32 for the market state vector, 
+        #along with how far back in data which the transformer takes for the time-series, 
+        #currently 100 steps since the first 0-99 steps are for training.
     
     def encodingStep(self):
-        encoding = np.zeros(self.num_dimensions)
-        for i in range(self.num_dimensions):
-            if i % 2 == 0:
-                encoding[i] = np.sin(self.pos / (10000 ** (2*i / self.num_dimensions)))
-            else:
-                encoding[i] = np.cos(self.pos / (10000 ** (2*i / self.num_dimensions)))
+        self.encodingVector = np.zeros(self.timeLength, self.dimensionSize)
+        currentPosition = np.arange(0, self.timeLength)[:, np.newaxis]
+        divisiveTerm = np.arange(0, self.dimensionSize) * -(10000 / self.dimensionSize)
+        #Starts the original and only encoding vector which will be added to the input
+        #Starts the position as an array for all the timesteps, then uses "[:, np.newaxis]" to turn it into a column vector
+        #[:, np.newaxis] turns it into a 2D array of the original size of the array, by 1
 
-        return encoding
+        self.encodingVector[:, 0::2] = np.sin(currentPosition / divisiveTerm)
+        self.encodingVector[:, 1::2] = np.cos(currentPosition / divisiveTerm)
+
+        return torch.tensor(self.encodingVector, torch.float32)
+
+    def getEncodingVector(self):
+        return self.encodingVector
 
 class AttentionHead(nn.Module):
-    def __init__(self, input_dimensions, output_dimensions):
+    def __init__(self, dimensionSize, attentionHeadOutputDimension):
         super(AttentionHead, self).__init__()
-        self.input_dimensions = input_dimensions
-        self.output_dimensions = output_dimensions
+        self.dimensionSize = dimensionSize
+        self.attentionHeadOutputDimension = attentionHeadOutputDimension
+        #The attention head calculates the key, query, and value vectors for an encoded input vector
+        #These are done just by doing a linear multiplication with qkv weight matrices
 
-        self.queryWeights = nn.Linear(self.input_dimensions, self.output_dimensions)
-        self.keyWeights = nn.Linear(self.input_dimensions, self.output_dimensions)
-        self.valueWeights = nn.Linear(self.input_dimensions, self.output_dimensions)
+        self.queryWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
+        self.keyWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
+        self.valueWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
 
     def attentionCalculation(self, marketState):
-        query = torch.matmul(self.queryWeights, marketState)
-        key = torch.matmul(self.keyWeights, marketState)
-        value = torch.matmul(self.valueWeights, marketState)
+        query = self.queryWeights(marketState)
+        key = self.keyWeights(marketState)
+        value = self.valueWeights(marketState)
 
-        attention_input = torch.matmul(query, key.transpose(-2, self.input_dimensions)) / np.sqrt(self.input_dimensions)
-        final_attentionValue = F.softmax(attention_input, dim=-1)
+        attentionFunction = torch.matmul(query, key.transpose(-2, self.dimensionSize)) / np.sqrt(self.dimensionSize)
+        attentionOutput = F.softmax(attentionFunction, dim=-1)
 
-        output = torch.matmul(final_attentionValue, value)
-
+        output = torch.matmul(attentionOutput, value)
         return output
     
 class MultiheadAttention(nn.Module):
-    def __init__(self, num_heads, input_dimensions, output_dimensions):
+    def __init__(self, numHeads, dimensionSize, attentionHeadOutputDimension):
         super(MultiheadAttention, self).__init__()
-        self.input_dimensions = input_dimensions
-        self.num_heads = num_heads
-        self.output_dimensions = output_dimensions
+        self.dimensionSize = dimensionSize
+        self.numHeads = numHeads
+        self.attentionHeadOutputDimension = attentionHeadOutputDimension
 
-        self.attention_heads = nn.ModuleList([AttentionHead(self.input_dimensions, self.output_dimensions)] for i in num_heads)
+        self.attention_heads = nn.ModuleList([AttentionHead(self.dimensionSize, self.attentionHeadOutputDimension)] for i in numHeads)
 
-        self.final_linear = nn.Linear(num_heads * output_dimensions, output_dimensions)
+        self.final_linear = nn.Linear(numHeads * attentionHeadOutputDimension, attentionHeadOutputDimension)
 
     def forwardAttention(self, marketState):
-        outputArray = [head(marketState) for head in self.num_heads]
+        outputArray = [head(marketState) for head in self.numHeads]
         
         concatenatedHeads = torch.Cat(outputArray, dim=-1)
         finalOutput = self.final_linear(concatenatedHeads)
@@ -66,22 +78,23 @@ class MultiheadAttention(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, num_heads, input_dimensions, output_dimensions, feedforward_dimensions):
+    def __init__(self, numHeads, dimensionSize, attentionHeadOutputDimension, feedforward_dimensions):
         super(Encoder, self).__init__()
-        self.num_heads = num_heads
-        self.input_dimensions = input_dimensions
-        self.output_dimensions = output_dimensions
+        self.numHeads = numHeads
+        self.dimensionSize = dimensionSize
+        self.attentionHeadOutputDimension = attentionHeadOutputDimension
         self.feedForward_dimensions = feedforward_dimensions
 
-        self.attention = MultiheadAttention(self.num_heads, self.input_dimensions, self.output_dimensions)
+        self.attention = MultiheadAttention(self.numHeads, self.dimensionSize, self.attentionHeadOutputDimension)
 
         self.feedForward = nn.Sequential(
-            nn.Linear(output_dimensions, feedforward_dimensions)
+            nn.Linear(attentionHeadOutputDimension, feedforward_dimensions)
             nn.ReLU()
-            nn.Linear(feedforward_dimensions, output_dimensions)
+            nn.Linear(feedforward_dimensions, attentionHeadOutputDimension)
         )
-        self.normalizationLayer1 = nn.LayerNorm(output_dimensions)
-        self.normalizationLayer2 = nn.LayerNorm(output_dimensions)
+
+        self.normalizationLayer1 = nn.LayerNorm(attentionHeadOutputDimension)
+        self.normalizationLayer2 = nn.LayerNorm(attentionHeadOutputDimension)
 
     def forwardEncoding(self, marketState):
         attentionOutput = self.attention(marketState)
@@ -91,42 +104,46 @@ class Encoder(nn.Module):
         finalOutput = self.normalizationLayer2(finalAttention + attentionOutput)
         return finalOutput
 
-class Decoder:
-    def __init__(self):
-
-
 class TransformerBlock(nn.Module):
-    def __init__(self, numLayers, num_heads, input_dimensions, output_dimensions, feedforward_dimensions):
+    def __init__(self, numLayers, numHeads, dimensionSize, attentionHeadOutputDimension, feedforward_dimensions):
         super(TransformerBlock, self).__init__()
         self.numLayers = numLayers
-        self.encoderLayers = nn.ModuleList([Encoder(num_heads, input_dimensions, output_dimensions, feedforward_dimensions)] for i in range numLayers)
+        self.encoderLayers = nn.ModuleList([
+            Encoder(numHeads, dimensionSize, attentionHeadOutputDimension, feedforward_dimensions) 
+            for i in range(numLayers)
+        ])
 
     def forward(self, marketState):
-        encoderOutput = marketState
-
-        for i in range self.numLayers:
-            encoderOutput = self.encoderLayers[i](encoderOutput)
+        for i in range(self.numLayers):
+            marketState = self.encoderLayers[i](marketState)
         
-        return encoderOutput
+        return marketState
 
 
 class PredictionModel:
     def __init__(self, transformermodel, model_path="",):
-
-    def predict(self, seq_dataPoint: DataPoint) -> np.ndarray | None:
-
-        if not seq_dataPoint.need_prediction:
-            return None
-        
         self.current_seq_ix = None
         self.sequence_history = []
-        
-        # Define a simple GRU model
-        self.gru = nn.GRU(input_size=32, hidden_size=64, num_layers=1, batch_first=True)
-        self.fc = nn.Linear(64, 2)  # Output layer for t0 and t1
 
-        # Initialize hidden state
-        self.hidden = None
+        self.dimensionCompressor = nn.Linear(32, 2)
+
+    def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
+
+        if self.current_seq_ix != currentSeq.seq_ix:
+            self.current_seq_ix = currentSeq.seq_ix
+            self.sequence_history = []
+
+        if not currentSeq.need_prediction:
+            return None
+        
+        currentTransformer = TransformerBlock(8, 8, 32, 32, 32)
+
+        transformerOutput = currentTransformer(currentSeq)
+        finalPrediction = self.dimensionCompressor(transformerOutput)
+
+        lossFunction = nn.L1Loss()
+        lossValue = lossFunction(finalPrediction, currentSeq.state)
+        lossValue.backward()
 
         prediction = np.zeros(2) # Placeholder for prediction output
         return prediction
