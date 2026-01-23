@@ -88,6 +88,7 @@ class ScorerStepByStep:
         prediction = None
 
         # Iterate over numpy array for speed
+        count = 0
         for row in tqdm(self.dataset.values):
             seq_ix = row[0]
             step_in_seq = row[1]
@@ -102,6 +103,10 @@ class ScorerStepByStep:
             if prediction is not None:
                 predictions.append(prediction)
                 targets.append(labels)
+            
+                count += 1
+                if(count >= 100000):
+                    break
 
         # report metrics
         return self.calc_metrics(np.array(predictions), np.array(targets))
