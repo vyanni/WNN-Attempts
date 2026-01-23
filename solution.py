@@ -2,6 +2,7 @@ import os
 import sys
 
 from example_solution.utils import DataPoint, ScorerStepByStep
+import transformer
 
 import torch as torch
 import torch.nn as nn
@@ -25,17 +26,18 @@ class PredictionModel:
         self.current_seq_ix = None
         self.sequence_history = []
 
-        self.currentTransformer = TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=32)
+        self.currentTransformer = transformer.TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=128)
 
         self.finalLinear = nn.Linear(32, 2)
         #Brings it down from 1x32 to 1x2 
 
-        self.PositionalEncodingObject = PositionalEncoding(dimensionSize = 32, timeLength = 100)
+        self.PositionalEncodingObject = transformer.PositionalEncoding(dimensionSize = 32, timeLength = 100)
         self.positionalEncodingVector = self.PositionalEncodingObject.getEncodingVector()
 
-        self.lossFunction = nn.MSELoss()
-        self.optimizerFunction = torch.optim.Adam(self.currentTransformer.parameters(), lr=0.001)
-        self.finalOptimizer = torch.optim.Adam(self.finalLinear.parameters(), lr=0.001)
+        self.lossFunction = nn.L1Loss()
+        allParameters = list(self.currentTransformer.parameters()) + list(self.finalLinear.parameters())
+        self.optimizer = torch.optim.Adam(allParameters, lr=0.001)
+
 
     def training(self, currentSeq: DataPoint, targetValue):
         if self.current_seq_ix != currentSeq.seq_ix:
@@ -53,10 +55,11 @@ class PredictionModel:
         transformerOutput = self.currentTransformer(inputTokens)
         #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
 
-        singleTimeStep = torch.mean(transformerOutput, dim = 0)
-        #Turns it into a 1x32 matrix for just a single timestep
+        lastTimeStep = transformerOutput[-1, :]
+        #Turns it into a 1x32 matrix for just a single timestep, use the last timestep for prediction
 
-        finalPrediction = self.finalLinear(singleTimeStep)
+        finalPrediction = self.finalLinear(lastTimeStep)
+        finalPrediction = torch.clamp(finalPrediction, -6.0, 6.0)
         #Changes it into a 1x2 vector for the predictions of t0 and t1
     
         prediction = finalPrediction.detach().numpy()
@@ -64,15 +67,14 @@ class PredictionModel:
         print(errorPercentage)
 
         targetValue = torch.tensor(targetValue, dtype=torch.float32)
+        lossValue = self.lossFunction(finalPrediction, targetValue)
+        
+        self.optimizer.zero_grad()
+        lossValue.backward()
 
-        self.lossValue = self.lossFunction(finalPrediction, targetValue)
-        self.lossValue.backward()
-
-        self.optimizerFunction.step()
-        self.optimizerFunction.zero_grad()
-
-        self.finalOptimizer.step()
-        self.finalOptimizer.zero_grad()
+        # Gradient clipping to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(list(self.currentTransformer.parameters()) + list(self.finalLinear.parameters()), max_norm=1.0)
+        self.optimizer.step()
 
     def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
         if self.current_seq_ix != currentSeq.seq_ix:
@@ -93,10 +95,11 @@ class PredictionModel:
         transformerOutput = self.currentTransformer(inputTokens)
         #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
 
-        singleTimeStep = torch.mean(transformerOutput, dim = 0)
+        lastTimeStep = transformerOutput[-1, :]
         #Turns it into a 1x32 matrix for just a single timestep
 
-        finalPrediction = self.finalLinear(singleTimeStep)
+        finalPrediction = self.finalLinear(lastTimeStep)
+        finalPrediction = torch.clamp(finalPrediction, -6.0, 6.0)
         #Changes it into a 1x2 vector for the predictions of t0 and t1
     
         prediction = finalPrediction.detach().numpy()
