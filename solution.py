@@ -35,7 +35,7 @@ class PositionalEncoding:
         self.encodingVector[:, 0::2] = np.sin(currentPosition / divisiveTerm)
         self.encodingVector[:, 1::2] = np.cos(currentPosition / divisiveTerm)
 
-        return torch.tensor(self.encodingVector, torch.float32)
+        return self.encodingVector.float()
 
     def getEncodingVector(self):
         return self.encodingVector
@@ -57,13 +57,17 @@ class AttentionHead(nn.Module):
         query = self.queryWeights(marketStateBatch)
         key = self.keyWeights(marketStateBatch)
         value = self.valueWeights(marketStateBatch)
-        #It takes in the 32x100 vector, where its 32 dimensions by 100 tokens, then multiplies each token in each row
-        #By the query, key, and value weights where it comes out as a 32x100 vector    
+        #It takes in the 100x32 vector, where its 32 dimensions by 100 tokens, then multiplies each token in each row
+        #By the query, key, and value weights where it comes out as a 100x32 vector, same size etc    
 
-        attentionFunction = torch.matmul(query, key.transpose(-2, self.dimensionSize)) / np.sqrt(self.dimensionSize)
+        attentionFunction = torch.matmul(query, torch.transpose(key, 0, 1)) / np.sqrt(self.dimensionSize)
         attentionOutput = F.softmax(attentionFunction, dim=-1)
+        # It then takes the query, multiplies it by the transpose of the key vector (matrix with all the tokens together)
+        # It divides it by the square root of the dimensions just to keep it from bloating up, then softmaxes it
 
         output = torch.matmul(attentionOutput, value)
+        #Dot products the softmax and the value in order to get the output, another 100x32 matrix
+
         return output
     
 class MultiheadAttention(nn.Module):
@@ -74,14 +78,17 @@ class MultiheadAttention(nn.Module):
         self.attentionHeadOutputDimension = attentionHeadOutputDimension
 
         self.attentionHeads = nn.ModuleList([AttentionHead(self.dimensionSize, self.attentionHeadOutputDimension) for i in range(numHeads)])
-
         self.final_linear = nn.Linear(numHeads * attentionHeadOutputDimension, attentionHeadOutputDimension)
 
     def forwardAttention(self, marketStateBatch):
         outputArray = [head(marketStateBatch) for head in self.attentionHeads]
-        
-        concatenatedHeads = torch.Cat(outputArray, dim=-1)
+        #Calculates the attention for each head, will probably do around 8
+
+        concatenatedHeads = torch.cat(outputArray, dim=-1)
         finalOutput = self.final_linear(concatenatedHeads)
+        #Concatenates it, so there's an array of 100x32 matrices, takes each one and pushes them together to be a
+        # 100x(32*number of heads) long matrix, then another linear transformation brings it back to 100x32 matrix
+        #So this still returns a 100x32 matrix
 
         return finalOutput
 
@@ -118,8 +125,7 @@ class TransformerBlock(nn.Module):
         super(TransformerBlock, self).__init__()
         self.numLayers = numLayers
         self.encoderLayers = nn.ModuleList([
-            Encoder(numHeads, dimensionSize, attentionHeadOutputDimension, feedforward_dimensions) 
-            for i in range(numLayers)
+            Encoder(numHeads, dimensionSize, attentionHeadOutputDimension, feedforward_dimensions) for i in range(numLayers)
         ])
 
     def forward(self, marketStateBatch):
@@ -128,44 +134,54 @@ class TransformerBlock(nn.Module):
         
         return marketStateBatch
 
-
 class PredictionModel:
     def __init__(self, model_path="",):
         self.current_seq_ix = None
         self.sequence_history = []
 
-        self.dimensionCompressor = nn.Linear(32, 2)
         self.currentTransformer = TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=32)
 
         self.finalLinear = nn.Linear(32, 2)
+        #Brings it down from 1x32 to 1x2 
 
         self.PositionalEncodingObject = PositionalEncoding(dimensionSize = 32, timeLength = 100)
         self.positionalEncodingVector = self.PositionalEncodingObject.getEncodingVector()
 
         self.lossFunction = nn.MSELoss()
         self.optimizerFunction = torch.optim.Adam(self.currentTransformer.parameters(), lr=0.001)
+        self.finalOptimizer = torch.optim.Adam(self.finalLinear.parameters(), lr=0.001)
 
     def training(self, currentSeq: DataPoint):
         if self.current_seq_ix != currentSeq.seq_ix:
             self.current_seq_ix = currentSeq.seq_ix
             self.sequence_history = torch.empty()
         
-        self.sequence_history = torch.cat([self.sequence_history, currentSeq.state.copy()], dim = 1)
+        self.sequence_history = torch.stack([self.sequence_history, currentSeq.state.copy()], dim = 1)
 
         if not currentSeq.need_prediction:
             return None
 
-        self.sequence_history = self.sequence_history + self.positionalEncodingVector
+        inputTokens = self.sequence_history[-100:, :] + self.positionalEncodingVector
+        
+        transformerOutput = self.currentTransformer(inputTokens)
+        #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
 
-        currentTransformer = TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=32)
+        singleTimeStep = torch.mean(transformerOutput, dim = 0)
+        #Turns it into a 1x32 matrix for just a single timestep
 
-        transformerOutput = currentTransformer(currentSeq)
-        finalPrediction = self.dimensionCompressor(transformerOutput)
-
-        prediction = self.finalLinear(finalPrediction)
-
+        finalPrediction = self.finalLinear(singleTimeStep)
+        #Changes it into a 1x2 vector for the predictions of t0 and t1
+    
+        prediction = finalPrediction.numpy()
+    
         self.lossValue = self.lossFunction(prediction, currentSeq.state)
         self.lossValue.backward()
+
+        self.optimizerFunction.step()
+        self.optimizerFunction.zero_grad()
+
+        self.finalOptimizer.step()
+        self.finalOptimizer.zero_grad()
 
     def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
         if self.current_seq_ix != currentSeq.seq_ix:
@@ -178,14 +194,21 @@ class PredictionModel:
             return None
         
         inputTokens = self.sequence_history[-100:, :] + self.positionalEncodingVector 
-        #Both are vector of size 32 x 100 for the 32 dimension market state, by the past 100 time steps
-        #The transformer always takes in a 32x100 vector, where each row of 32x1 is 1 token
+        #Both are vector of size 100x32 for the 32 dimension market state, by the past 100 time steps
+        #The transformer always takes in a 100x32 vector, where each row of 1x32 is 1 token
+        #Its declared as (rows, columns), but mathematically, its columns x rows
 
         transformerOutput = self.currentTransformer(inputTokens)
-        finalPrediction = self.dimensionCompressor(transformerOutput)
+        #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
 
-        finalLinear = nn.Linear(32, 2)
-        prediction = finalLinear(finalPrediction)
+        singleTimeStep = torch.mean(transformerOutput, dim = 0)
+        #Turns it into a 1x32 matrix for just a single timestep
+
+        finalPrediction = self.finalLinear(singleTimeStep)
+        #Changes it into a 1x2 vector for the predictions of t0 and t1
+    
+
+        prediction = finalPrediction.numpy()
 
         return prediction
 
