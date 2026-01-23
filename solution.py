@@ -51,12 +51,14 @@ class AttentionHead(nn.Module):
         self.queryWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
         self.keyWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
         self.valueWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
+        #
 
     def attentionCalculation(self, marketStateBatch):
         query = self.queryWeights(marketStateBatch)
         key = self.keyWeights(marketStateBatch)
         value = self.valueWeights(marketStateBatch)
-        #It takes in the 32x100 vector, where its 32 dimensions by 100 tokens    
+        #It takes in the 32x100 vector, where its 32 dimensions by 100 tokens, then multiplies each token in each row
+        #By the query, key, and value weights where it comes out as a 32x100 vector    
 
         attentionFunction = torch.matmul(query, key.transpose(-2, self.dimensionSize)) / np.sqrt(self.dimensionSize)
         attentionOutput = F.softmax(attentionFunction, dim=-1)
@@ -135,11 +137,13 @@ class PredictionModel:
         self.dimensionCompressor = nn.Linear(32, 2)
         self.currentTransformer = TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=32)
 
+        self.finalLinear = nn.Linear(32, 2)
+
         self.PositionalEncodingObject = PositionalEncoding(dimensionSize = 32, timeLength = 100)
         self.positionalEncodingVector = self.PositionalEncodingObject.getEncodingVector()
 
         self.lossFunction = nn.MSELoss()
-        self.optimizerFunction = torch.optim.Adam(currentTransformer.parameters(), lr=0.001)
+        self.optimizerFunction = torch.optim.Adam(self.currentTransformer.parameters(), lr=0.001)
 
     def training(self, currentSeq: DataPoint):
         if self.current_seq_ix != currentSeq.seq_ix:
@@ -158,8 +162,7 @@ class PredictionModel:
         transformerOutput = currentTransformer(currentSeq)
         finalPrediction = self.dimensionCompressor(transformerOutput)
 
-        finalLinear = nn.Linear(32, 2)
-        prediction = finalLinear(finalPrediction)
+        prediction = self.finalLinear(finalPrediction)
 
         self.lossValue = self.lossFunction(prediction, currentSeq.state)
         self.lossValue.backward()
