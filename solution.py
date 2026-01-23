@@ -1,12 +1,15 @@
 import os
 import sys
+
 from example_solution.utils import DataPoint, ScorerStepByStep
+
 import torch as torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import numpy as np
 import pandas as pd
+import pyarrow as pyarrow
 
 class PositionalEncoding:
     def __init__(self, dimensionSize = 32, timeLength = 100):
@@ -127,11 +130,15 @@ class PredictionModel:
 
         self.dimensionCompressor = nn.Linear(32, 2)
 
-    def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
+    def training(self, currentSeq: DataPoint):
 
+
+    def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
         if self.current_seq_ix != currentSeq.seq_ix:
             self.current_seq_ix = currentSeq.seq_ix
             self.sequence_history = []
+        
+        self.sequence_history.append(currentSeq.state.copy())
 
         if not currentSeq.need_prediction:
             return None
@@ -145,5 +152,7 @@ class PredictionModel:
         lossValue = lossFunction(finalPrediction, currentSeq.state)
         lossValue.backward()
 
-        prediction = np.zeros(2) # Placeholder for prediction output
+        finalLinear = nn.Linear(32, 2)
+        prediction = finalLinear(finalPrediction)
+
         return prediction
