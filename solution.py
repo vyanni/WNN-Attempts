@@ -22,9 +22,9 @@ class PositionalEncoding:
         #currently 100 steps since the first 0-99 steps are for training.
     
     def encodingStep(self):
-        self.encodingVector = np.zeros(self.timeLength, self.dimensionSize)
-        currentPosition = np.arange(0, self.timeLength)[:, np.newaxis]
-        divisiveTerm = np.arange(0, self.dimensionSize) * -(10000 / self.dimensionSize)
+        self.encodingVector = torch.zeros(self.timeLength, self.dimensionSize)
+        currentPosition = torch.arange(0, self.timeLength)[:, np.newaxis]
+        divisiveTerm = torch.arange(0, self.dimensionSize) * -(10000 / self.dimensionSize)
         #Starts the original and only encoding vector which will be added to the input
         #Starts the position as an array for all the timesteps, then uses "[:, np.newaxis]" to turn it into a column vector
         #[:, np.newaxis] turns it into a 2D array of the original size of the array, by 1
@@ -67,12 +67,12 @@ class MultiheadAttention(nn.Module):
         self.numHeads = numHeads
         self.attentionHeadOutputDimension = attentionHeadOutputDimension
 
-        self.attention_heads = nn.ModuleList([AttentionHead(self.dimensionSize, self.attentionHeadOutputDimension)] for i in numHeads)
+        self.attentionHeads = nn.ModuleList([AttentionHead(self.dimensionSize, self.attentionHeadOutputDimension) for i in range(numHeads)])
 
         self.final_linear = nn.Linear(numHeads * attentionHeadOutputDimension, attentionHeadOutputDimension)
 
     def forwardAttention(self, marketState):
-        outputArray = [head(marketState) for head in self.numHeads]
+        outputArray = [head(marketState) for head in self.attentionHeads]
         
         concatenatedHeads = torch.Cat(outputArray, dim=-1)
         finalOutput = self.final_linear(concatenatedHeads)
@@ -91,8 +91,8 @@ class Encoder(nn.Module):
         self.attention = MultiheadAttention(self.numHeads, self.dimensionSize, self.attentionHeadOutputDimension)
 
         self.feedForward = nn.Sequential(
-            nn.Linear(attentionHeadOutputDimension, feedforward_dimensions)
-            nn.ReLU()
+            nn.Linear(attentionHeadOutputDimension, feedforward_dimensions),
+            nn.ReLU(),
             nn.Linear(feedforward_dimensions, attentionHeadOutputDimension)
         )
 
@@ -131,7 +131,28 @@ class PredictionModel:
         self.dimensionCompressor = nn.Linear(32, 2)
 
     def training(self, currentSeq: DataPoint):
+        if self.current_seq_ix != currentSeq.seq_ix:
+            self.current_seq_ix = currentSeq.seq_ix
+            self.sequence_history = []
+        
+        self.sequence_history.append(currentSeq.state.copy())
 
+        if not currentSeq.need_prediction:
+            return None
+        
+        currentTransformer = TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=32)
+
+        transformerOutput = currentTransformer(currentSeq)
+        finalPrediction = self.dimensionCompressor(transformerOutput)
+
+        finalLinear = nn.Linear(32, 2)
+        prediction = finalLinear(finalPrediction)
+
+        lossFunction = nn.MSELoss()
+        lossValue = lossFunction(prediction, currentSeq.state)
+        lossValue.backward()
+
+        optimizerFunction = torch.optim.Adam(currentTransformer.parameters(), lr=0.001)
 
     def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
         if self.current_seq_ix != currentSeq.seq_ix:
@@ -143,16 +164,16 @@ class PredictionModel:
         if not currentSeq.need_prediction:
             return None
         
-        currentTransformer = TransformerBlock(8, 8, 32, 32, 32)
+        currentTransformer = TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=32)
 
         transformerOutput = currentTransformer(currentSeq)
         finalPrediction = self.dimensionCompressor(transformerOutput)
-
-        lossFunction = nn.L1Loss()
-        lossValue = lossFunction(finalPrediction, currentSeq.state)
-        lossValue.backward()
 
         finalLinear = nn.Linear(32, 2)
         prediction = finalLinear(finalPrediction)
 
         return prediction
+
+trainingFileDirectory = f"{CURRENT_DIR}/../datasets/valid.parquet"
+df = pd.read_parquet(trainingFileDirectory)
+print(df.head())
