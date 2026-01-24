@@ -26,37 +26,30 @@ class PositionalEncoding(nn.Module):
         #Takes in the dimension size of 32 for the market state vector, 
         #along with how far back in data which the transformer takes for the time-series, 
         #currently 100 steps since the first 0-99 steps are for training.
-    
-    def sinusodialEncoding(self):
-        sinusodialEncoded = torch.zeros(self.timeLength, self.dimensionSize)
+        
+        self.sinusodialEncoded = torch.zeros(self.timeLength, self.dimensionSize)
         currentPosition = torch.arange(self.timeLength).unsqueeze(1).float()
         divisiveTerm = torch.exp(
             torch.arange(0, self.dimensionSize, 2).float() * (-np.log(10000.0) / self.dimensionSize)
         )
-        #self.register_buffer("sinEn", sinsusodialEncoding)
 
         #Starts the original and only encoding vector which will be added to the input
         #Starts the position as an array for all the timesteps, then uses "[:, np.newaxis]" to turn it into a column vector
         #[:, np.newaxis] turns it into a 2D array of the original size of the array, by 1
 
-        sinusodialEncoded[:, 0::2] = torch.sin(currentPosition / divisiveTerm)
-        sinusodialEncoded[:, 1::2] = torch.cos(currentPosition / divisiveTerm) 
+        self.sinusodialEncoded[:, 0::2] = torch.sin(currentPosition / divisiveTerm)
+        self.sinusodialEncoded[:, 1::2] = torch.cos(currentPosition / divisiveTerm)
 
-        return sinusodialEncoded.float()
-    
-    def learnableEncoding(self):
-        learnableEncoded = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize) * 0.05)
+        self.register_buffer("sinEncoding", self.sinusodialEncoded) 
 
-        return learnableEncoded.float()
+        self.learnableEncoded = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize) * 0.05)
+
     
     def forward(self, marketStateBatch):
-        self.sinusodiualEncoded = self.sinusodialEncoding()
-        self.learnableEncoded = self.learnableEncoding()
-
         positionalWeights = self.adaptivePositionAttention(marketStateBatch)
 
         encodingVector = (
-            ((self.sinusodiualEncoded * self.sinsusodialWeight) + 
+            ((self.sinusodialEncoded * self.sinsusodialWeight) + 
             (self.learnableEncoded * self.learnableWeight)) * 
             (positionalWeights)
         )
@@ -95,7 +88,7 @@ class AttentionHead(nn.Module):
         
         #Create upper matrix mask for the top right, preventing the transformer from taking into account a token's relation to a future token 
         self.matriceMask = torch.tril(torch.ones(maxLength, maxLength))
-        #self.register_buffer("causal_mask", causal_mask)
+        self.register_buffer("matriceMask", self.matriceMask)
 
     def forward(self, marketStateBatch):
         seqLength = marketStateBatch.shape[0]

@@ -23,6 +23,7 @@ validationFile = pd.read_parquet(validationFileDirectory)
 
 class PredictionModel:
     def __init__(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.current_seq_ix = None
         self.sequence_history = []
 
@@ -40,62 +41,107 @@ class PredictionModel:
         )
         #Brings it down from 1x32 to 1x2 
 
-        self.lossFunction = nn.L1Loss()
+        self.currentTransformer.to(self.device)
+        self.marketStateCompressor.to(self.device)
+
+        self.l1LossFunction = nn.L1Loss()
+        self.mseLossFunction = nn.MSELoss()
+        self.huberLossFunction = nn.HuberLoss(delta = 0.3)
 
         allParameters = (
             list(self.currentTransformer.parameters()) + 
             list(self.marketStateCompressor.parameters())
         )
 
-        self.optimizer = torch.optim.Adam(allParameters, lr=0.001)
+        self.optimizer = torch.optim.Adam(allParameters, lr=0.005) 
+        self.validator = ScorerStepByStep(validationFileDirectory)
 
 
-    def training(self, currentSeq: DataPoint, targetValue):
-        if self.current_seq_ix != currentSeq.seq_ix:
-            self.current_seq_ix = currentSeq.seq_ix
-            self.sequence_history = torch.empty(0, 32, dtype=torch.float32)
+    def training(self, trainingFile, numEpochs, batches):
+        trainingSequences = []
+        unique_seqs = trainingFile['seq_ix'].unique()
         
-        pytorchMarketState = torch.tensor(currentSeq.state.copy(), dtype=torch.float32).unsqueeze(0)
-        self.sequence_history = torch.cat([self.sequence_history, pytorchMarketState], dim = 0)
+        for seq_ix in unique_seqs:
+            seq_data = trainingFile[trainingFile['seq_ix'] == seq_ix].sort_values('step_in_seq')
+            marketStates = seq_data.iloc[:, 3:35].values  # Features columns
+            targetValues = seq_data.iloc[:, 35:].values  # Target columns
+            need_pred = seq_data['need_prediction'].values
+            
+            for i in range(len(marketStates)):
+                if need_pred[i]:
+                    contextWindow = marketStates[max(0, i-99):i+1]
 
-        if not currentSeq.need_prediction:
-            return None
+                    if len(contextWindow) < 100:
+                        padding = np.zeros((100 - len(contextWindow), contextWindow.shape[1]))
+                        contextWindow = np.vstack([padding, contextWindow])
+                    
+                    trainingSequences.append({
+                        'context': contextWindow,
+                        'target': targetValues[i]
+                    })
 
-        self.currentTransformer.train()
-        transformerOutput = self.currentTransformer(self.sequence_history[-100:, :])
-        #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
-
-        lastTimeStep = transformerOutput[-1, :]
-        #Turns it into a 1x32 matrix for just a single timestep, use the last timestep for prediction
-
-        self.marketStateCompressor.train()
-        finalPrediction = self.marketStateCompressor(lastTimeStep)
-        finalPrediction = torch.clamp(finalPrediction, -6.0, 6.0)
-        #Changes it into a 1x2 vector for the predictions of t0 and t1
-    
-        prediction = finalPrediction.detach().numpy()
-
-        targetValue = torch.tensor(targetValue, dtype=torch.float32)
-        lossValue = self.lossFunction(finalPrediction, targetValue)
         
-        self.optimizer.zero_grad()
-        lossValue.backward()
+        bestvalPearson = -1.0
 
-        # Gradient clipping to prevent exploding gradients
-        torch.nn.utils.clip_grad_norm_(
-            list(self.currentTransformer.parameters()) + 
-            list(self.marketStateCompressor.parameters()), 
-            max_norm=1.0
-        )
-        
-        self.optimizer.step()
+        for epoch in range(numEpochs):
+            # Training phase
+            self.currentTransformer.train()
+            self.marketStateCompressor.train()
+            
+            # Shuffle and batch
+            np.random.shuffle(trainingSequences)
+            train_loss = 0.0
+            num_batches = 0
+            
+            for batchStart in range(0, len(trainingSequences), batches):
+                batchEnd = min(batchStart + batches, len(trainingSequences))
+                batch = trainingSequences[batchStart:batchEnd]
+                
+                self.optimizer.zero_grad()
+                batch_loss = 0.0
+                for sample in batch:
+                    contextWindow = torch.tensor(sample['context'], dtype=torch.float32).to(self.device)
+                    targetValues = torch.tensor(sample['target'], dtype=torch.float32).to(self.device)
+                    
+                    transformerOutput = self.currentTransformer(contextWindow)
+                    lastTimeStep = transformerOutput[-1, :]
+                    prediction = self.marketStateCompressor(lastTimeStep)
+                    prediction = torch.clamp(prediction, -6.0, 6.0)
+                    
+                    lossValue = ((self.l1LossFunction(prediction, targetValues) * 0.3) + 
+                                 (self.mseLossFunction(prediction, targetValues) * 0.4) + 
+                                 (self.huberLossFunction(prediction, targetValues) * 0.3)
+                    )
 
-        return prediction
+                    batch_loss += lossValue
+                
+                batch_loss = batch_loss / len(batch)
+                batch_loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.currentTransformer.parameters()) + 
+                    list(self.marketStateCompressor.parameters()), 
+                    max_norm=1.0
+                )
+                
+                self.optimizer.step()
+                train_loss += batch_loss.item()
+                num_batches += 1
+            
+            train_loss /= num_batches 
+
+            valPearson = self.validator.score(self) 
+            if valPearson > bestvalPearson:
+                bestvalPearson = valPearson
+                
+                self.saveParameters('bestParams.pt', epoch, valPearson)
+                print(f"Best model with Pearson: {valPearson:.6f}")
 
     def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
         if self.current_seq_ix != currentSeq.seq_ix:
             self.current_seq_ix = currentSeq.seq_ix
-            self.sequence_history = torch.empty(0, 32, dtype=torch.float32)
+            self.sequence_history = torch.empty(0, 32, dtype=torch.float32).to(self.device)
         
         pytorchMarketState = torch.tensor(currentSeq.state.copy(), dtype=torch.float32).unsqueeze(0)
         self.sequence_history = torch.cat([self.sequence_history, pytorchMarketState], dim = 0)
@@ -120,35 +166,38 @@ class PredictionModel:
             finalPrediction = torch.clamp(finalPrediction, -6.0, 6.0)
             #Changes it into a 1x2 vector for the predictions of t0 and t1
     
-        prediction = finalPrediction.detach().numpy()
+        prediction = finalPrediction.detach().cpu().numpy()
         return prediction
+
+    def saveParameters(self, filename, epoch, valPearson):
+        checkpoint = {
+            'epoch': epoch,
+            'modelState': self.currentTransformer.state_dict(),
+            'compressorState': self.marketStateCompressor.state_dict(),
+            'optimizerState': self.optimizer.state_dict(),
+            'pearsonCoefficient': valPearson,
+            'config': {
+                'numLayers': 8,
+                'numHeads': 8,
+                'dimensionSize': 32,
+                'feedforward_dimensions': 256,
+            }
+        }
+
+        torch.save(checkpoint, filename)
+
+    def loadParameters(self, filename):
+        checkpoint = torch.load(filename, map_location = self.device)
+        self.currentTransformer.load_state_dict(checkpoint['modelState'])
+        self.marketStateCompressor.load_state_dict(checkpoint['compressorState'])
 
 if __name__ == "__main__":
     if os.path.exists(validationFileDirectory):
         trialModel = PredictionModel()
+        trialModel.training(trainingFile, 50, 32)
 
-        amountSteps = 2000
-
-        count = 0
-        for idx, row in trainingFile.iterrows():
-            seq_ix = row[0]
-            step_in_seq = row[1]
-            need_prediction = row[2]
-            lob_data = row[3:35].to_numpy()
-            labels = row[35:]
-
-            data_point = DataPoint(seq_ix, step_in_seq, need_prediction, lob_data)
-            prediction = trialModel.training(data_point, labels)
-
-            if(count % 50 == 0 and prediction is not None):
-                errorPercentage = np.abs(prediction - labels) / labels
-                print(errorPercentage)
-            
-            count += 1
-
-            if(count >= amountSteps):
-                print("Done Testing")
-                break
+        if os.path.exists('bestParams.pt'):
+            trialModel.loadParameters('bestParams.pt')
 
         scorer = ScorerStepByStep(validationFileDirectory)
         
