@@ -7,11 +7,17 @@ import pandas as pd
 import pyarrow as pyarrow
 
 class PositionalEncoding:
-    def __init__(self, dimensionSize = 32, timeLength = 1000):
+    def __init__(self, dimensionSize = 32, timeLength = 100):
         self.dimensionSize = dimensionSize
         self.timeLength = timeLength
 
-        self.encodingVector = (self.sinusodialEncoding() + self.learnableEncoding())
+        self.adaptivePositionAttention = nn.Sequential(
+            nn.Linear(dimensionSize, dimensionSize),
+            nn.ReLU(),
+            nn.Linear(dimensionSize, dimensionSize),
+            nn.Sigmoid()
+        )
+
         #Takes in the dimension size of 32 for the market state vector, 
         #along with how far back in data which the transformer takes for the time-series, 
         #currently 100 steps since the first 0-99 steps are for training.
@@ -29,16 +35,38 @@ class PositionalEncoding:
         sinsusodialEncoding[:, 0::2] = torch.sin(currentPosition / divisiveTerm)
         sinsusodialEncoding[:, 1::2] = torch.cos(currentPosition / divisiveTerm) 
 
+        self.sinsusodialWeight = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize))
+
         return sinsusodialEncoding.float()
     
     def learnableEncoding(self):
-        learnableEncoding = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize))
+        learnableEncoding = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize) * 0.05)
+
+        self.learnableWeight = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize))
 
         return learnableEncoding.float()
         
+    def getEncodingVector(self, marketStateBatch):
+        positionalWeights = self.adaptivePositionAttention(marketStateBatch)
 
-    def getEncodingVector(self):
-        return self.encodingVector
+        encodingVector = (
+            ((self.sinusodialEncoding() * self.sinsusodialWeight) + 
+            (self.learnableEncoding() * self.learnableWeight)) * 
+            (positionalWeights)
+        )
+
+        encodingVector = (marketStateBatch + encodingVector)
+        return encodingVector
+    
+class FeatureAttention(nn.Module):
+    def __init__(self, dimensionSize, extraFeatures):
+        super(FeatureAttention, self).__init__()
+
+        self.individualFeatureAttention = nn.Sequential(
+            nn.Linear(dimensionSize, extraFeatures),
+            nn.ReLU(),
+            nn.Linear(extraFeatures, dimensionSize)
+        )
 
 class AttentionHead(nn.Module):
     def __init__(self, dimensionSize, attentionHeadOutputDimension, maxLength = 100):
