@@ -32,7 +32,7 @@ class PositionalEncoding:
         return sinsusodialEncoding.float()
     
     def learnableEncoding(self):
-        learnableEncoding = nn.Parameters(torch.randn(self.timeLength, self.dimensionSize))
+        learnableEncoding = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize))
 
         return learnableEncoding.float()
         
