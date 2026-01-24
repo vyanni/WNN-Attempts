@@ -1,7 +1,7 @@
 import os
 import sys
 
-from example_solution.utils import DataPoint, ScorerStepByStep
+from example_solution.utils import DataPoint, ScorerStepByStep, weighted_pearson_correlation
 import transformer
 
 import torch as torch
@@ -26,13 +26,27 @@ class PredictionModel:
         self.current_seq_ix = None
         self.sequence_history = []
 
-        self.currentTransformer = transformer.TransformerBlock(numLayers = 8, numHeads = 8, dimensionSize = 32, attentionHeadOutputDimension = 32, feedforward_dimensions = 256)
+        self.currentTransformer = transformer.TransformerBlock(
+            numLayers = 8, 
+            numHeads = 8, 
+            dimensionSize = 32, 
+            attentionHeadOutputDimension = 32, 
+            feedforward_dimensions = 256
+        )
 
-        self.marketStateCompressor = transformer.HighwayNetwork(dimensionSize = 32, outputDimensions = 2)
+        self.marketStateCompressor = transformer.HighwayNetwork(
+            dimensionSize = 32, 
+            outputDimensions = 2
+        )
         #Brings it down from 1x32 to 1x2 
 
         self.lossFunction = nn.L1Loss()
-        allParameters = list(self.currentTransformer.parameters()) + list(self.marketStateCompressor.parameters())
+
+        allParameters = (
+            list(self.currentTransformer.parameters()) + 
+            list(self.marketStateCompressor.parameters())
+        )
+
         self.optimizer = torch.optim.Adam(allParameters, lr=0.001)
 
 
@@ -47,12 +61,14 @@ class PredictionModel:
         if not currentSeq.need_prediction:
             return None
 
+        self.currentTransformer.train()
         transformerOutput = self.currentTransformer(self.sequence_history[-100:, :])
         #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
 
         lastTimeStep = transformerOutput[-1, :]
         #Turns it into a 1x32 matrix for just a single timestep, use the last timestep for prediction
 
+        self.marketStateCompressor.train()
         finalPrediction = self.marketStateCompressor(lastTimeStep)
         finalPrediction = torch.clamp(finalPrediction, -6.0, 6.0)
         #Changes it into a 1x2 vector for the predictions of t0 and t1
@@ -66,7 +82,12 @@ class PredictionModel:
         lossValue.backward()
 
         # Gradient clipping to prevent exploding gradients
-        torch.nn.utils.clip_grad_norm_(list(self.currentTransformer.parameters()) + list(self.finalLinear.parameters()), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(
+            list(self.currentTransformer.parameters()) + 
+            list(self.marketStateCompressor.parameters()), 
+            max_norm=1.0
+        )
+        
         self.optimizer.step()
 
         return prediction
@@ -86,15 +107,18 @@ class PredictionModel:
         #The transformer always takes in a 100x32 vector, where each row of 1x32 is 1 token
         #Its declared as (rows, columns), but mathematically, its columns x rows
 
-        transformerOutput = self.currentTransformer(self.sequence_history[-100:, :])
-        #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
+        with torch.no_grad():
+            self.currentTransformer.eval()
+            transformerOutput = self.currentTransformer(self.sequence_history[-100:, :])
+            #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
 
-        lastTimeStep = transformerOutput[-1, :]
-        #Turns it into a 1x32 matrix for just a single timestep
+            lastTimeStep = transformerOutput[-1, :]
+            #Turns it into a 1x32 matrix for just a single timestep
 
-        finalPrediction = self.marketStateCompressor(lastTimeStep)
-        finalPrediction = torch.clamp(finalPrediction, -6.0, 6.0)
-        #Changes it into a 1x2 vector for the predictions of t0 and t1
+            self.marketStateCompressor.eval()
+            finalPrediction = self.marketStateCompressor(lastTimeStep)
+            finalPrediction = torch.clamp(finalPrediction, -6.0, 6.0)
+            #Changes it into a 1x2 vector for the predictions of t0 and t1
     
         prediction = finalPrediction.detach().numpy()
         return prediction

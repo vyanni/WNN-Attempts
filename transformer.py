@@ -20,48 +20,49 @@ class PositionalEncoding(nn.Module):
             nn.Sigmoid()
         )
 
+        self.sinsusodialWeight = nn.Parameter(torch.ones(1))
+        self.learnableWeight = nn.Parameter(torch.ones(1))
+
         #Takes in the dimension size of 32 for the market state vector, 
         #along with how far back in data which the transformer takes for the time-series, 
         #currently 100 steps since the first 0-99 steps are for training.
     
     def sinusodialEncoding(self):
-        sinsusodialEncoding = torch.zeros(self.timeLength, self.dimensionSize)
+        sinusodialEncoded = torch.zeros(self.timeLength, self.dimensionSize)
         currentPosition = torch.arange(self.timeLength).unsqueeze(1).float()
         divisiveTerm = torch.exp(
             torch.arange(0, self.dimensionSize, 2).float() * (-np.log(10000.0) / self.dimensionSize)
         )
-        self.register_buffer("sinusodialEncoding", sinsusodialEncoding)
+        #self.register_buffer("sinEn", sinsusodialEncoding)
 
         #Starts the original and only encoding vector which will be added to the input
         #Starts the position as an array for all the timesteps, then uses "[:, np.newaxis]" to turn it into a column vector
         #[:, np.newaxis] turns it into a 2D array of the original size of the array, by 1
 
-        sinsusodialEncoding[:, 0::2] = torch.sin(currentPosition / divisiveTerm)
-        sinsusodialEncoding[:, 1::2] = torch.cos(currentPosition / divisiveTerm) 
+        sinusodialEncoded[:, 0::2] = torch.sin(currentPosition / divisiveTerm)
+        sinusodialEncoded[:, 1::2] = torch.cos(currentPosition / divisiveTerm) 
 
-        self.sinsusodialWeight = nn.Parameter(torch.ones(1))
-        return sinsusodialEncoding.float()
+        return sinusodialEncoded.float()
     
     def learnableEncoding(self):
-        learnableEncoding = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize) * 0.05)
+        learnableEncoded = nn.Parameter(torch.randn(self.timeLength, self.dimensionSize) * 0.05)
 
-        self.learnableWeight = nn.Parameter(nn.Parameter(torch.ones(1)))
-        return learnableEncoding.float()
+        return learnableEncoded.float()
     
     def forward(self, marketStateBatch):
-        self.sinusodiualEncoding = self.sinusodialEncoding()
-        self.learnableEncoding = self.learnableEncoding()
+        self.sinusodiualEncoded = self.sinusodialEncoding()
+        self.learnableEncoded = self.learnableEncoding()
 
         positionalWeights = self.adaptivePositionAttention(marketStateBatch)
 
         encodingVector = (
-            ((self.sinusodiualEncoding * self.sinsusodialWeight) + 
-            (self.learnableEncoding * self.learnableWeight)) * 
+            ((self.sinusodiualEncoded * self.sinsusodialWeight) + 
+            (self.learnableEncoded * self.learnableWeight)) * 
             (positionalWeights)
         )
 
         encodingVector = (marketStateBatch + encodingVector)
-        return self.dropout(encodingVector)
+        return encodingVector
     
 class FeatureAttention(nn.Module):
     def __init__(self, dimensionSize, hiddenDimension = 16):
@@ -132,7 +133,7 @@ class MultiheadAttention(nn.Module):
         self.finalLinear = nn.Linear(numHeads * attentionHeadOutputDimension, attentionHeadOutputDimension)
 
     def forward(self, marketStateBatch):
-        outputArray = [head.forward(marketStateBatch) for head in self.attentionHeads]
+        outputArray = [head(marketStateBatch) for head in self.attentionHeads]
         #Calculates the attention for each head, will probably do around 8
 
         concatenatedHeads = torch.cat(outputArray, dim=-1)
@@ -172,7 +173,7 @@ class Encoder(nn.Module):
 
 class HighwayNetwork(nn.Module):
     def __init__(self, dimensionSize, outputDimensions, num_layers= 2):
-        super(HighwayNetwork).__init__()
+        super().__init__()
         self.layers = nn.ModuleList()
         self.gates = nn.ModuleList()
         
@@ -200,7 +201,7 @@ class TransformerBlock(nn.Module):
         ])
 
         # Feature attention to learn important features
-        self.featureAttention = FeatureAttention(dimensionSize = 32, hidden_dim=16)
+        self.featureAttention = FeatureAttention(dimensionSize = 32, hiddenDimension = 16)
 
         # Input projection with residual
         self.inputProj = nn.Sequential(
@@ -219,13 +220,13 @@ class TransformerBlock(nn.Module):
         self.convNormalization = nn.LayerNorm(dimensionSize)
 
     def forward(self, marketStateBatch):
-        #Adding feature attention first
-        inputTokens = self.featureAttention(marketStateBatch)
-        
-        #Projection normalization second
-        inputProj = self.inputProj(inputTokens)
-        inputSkip = self.input_skip(inputTokens)
+        #Projection normalization first
+        inputProj = self.inputProj(marketStateBatch)
+        inputSkip = self.inputSkip(marketStateBatch)
         inputTokens = inputProj + inputSkip
+
+        #Adding feature attention after
+        inputTokens = self.featureAttention(inputTokens)
         
         # Add positional encoding
         inputTokens = self.positionEncoder(inputTokens)
@@ -235,7 +236,7 @@ class TransformerBlock(nn.Module):
         cnnOutput = torch.relu(self.cnnLayer(inputtoCNN))
         inputtoCNN =inputtoCNN + cnnOutput  # Residual
         inputtoCNN = inputtoCNN.transpose(1, 2).squeeze(0)  # Remove batch dim
-        inputTokens = self.conv_norm(inputtoCNN)
+        inputTokens = self.convNormalization(inputtoCNN)
         
         # Transformer layers
         for individualEncoderLayer in self.encoderLayers:
