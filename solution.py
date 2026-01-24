@@ -26,13 +26,12 @@ class PredictionModel:
         self.current_seq_ix = None
         self.sequence_history = []
 
-        self.currentTransformer = transformer.TransformerBlock(numLayers=8, numHeads=8, dimensionSize=32, attentionHeadOutputDimension=32, feedforward_dimensions=128)
+        self.currentTransformer = transformer.TransformerBlock(numLayers = 8, numHeads = 8, dimensionSize = 32, attentionHeadOutputDimension = 32, feedforward_dimensions = 256)
 
         self.finalLinear = nn.Linear(32, 2)
         #Brings it down from 1x32 to 1x2 
 
         self.PositionalEncodingObject = transformer.PositionalEncoding(dimensionSize = 32, timeLength = 100)
-        self.positionalEncodingVector = self.PositionalEncodingObject.getEncodingVector()
 
         self.lossFunction = nn.L1Loss()
         allParameters = list(self.currentTransformer.parameters()) + list(self.finalLinear.parameters())
@@ -50,7 +49,7 @@ class PredictionModel:
         if not currentSeq.need_prediction:
             return None
 
-        inputTokens = self.sequence_history[-100:, :] + self.positionalEncodingVector
+        inputTokens = self.PositionalEncodingObject.getEncodingVector(self.sequence_history[-100:, :])
         
         transformerOutput = self.currentTransformer(inputTokens)
         #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
@@ -104,7 +103,7 @@ class PredictionModel:
     
         prediction = finalPrediction.detach().numpy()
         return prediction
-    
+
 trialModel = PredictionModel()
 
 count = 0
@@ -125,10 +124,16 @@ for idx, row in trainingFile.iterrows():
     if(count >= 50000):
         break
 
-scorer = ScorerStepByStep(validationFileDirectory)
-results = scorer.score(trialModel)
-
-print("\nResults:")
-print(f"Mean Weighted Pearson correlation: {results['weighted_pearson']:.6f}")
-for i, target in enumerate(scorer.targets):
-    print(f"  {target}: {results[target]:.6f}")
+if __name__ == "__main__":
+    if os.path.exists(validationFileDirectory):
+        scorer = ScorerStepByStep(validationFileDirectory)
+        
+        print("Testing Transformer...")
+        results = scorer.score(trialModel)
+        
+        print("\nResults:")
+        print(f"Mean Weighted Pearson correlation: {results['weighted_pearson']:.6f}")
+        for i, target in enumerate(scorer.targets):
+            print(f"  {target}: {results[target]:.6f}")
+    else:
+        print("Valid parquet not found for testing.")
