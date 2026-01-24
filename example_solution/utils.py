@@ -104,9 +104,9 @@ class ScorerStepByStep:
                 predictions.append(prediction)
                 targets.append(labels)
             
-                count += 1
-                if(count >= 100000):
-                    break
+            count += 1
+            if(count >= 5000):
+                break
 
         # report metrics
         return self.calc_metrics(np.array(predictions), np.array(targets))
