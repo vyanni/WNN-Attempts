@@ -122,8 +122,13 @@ for idx, row in trainingFile.iterrows():
     print(f"Iteration: {count}")
     count += 1
 
-    if(count >= 10000):
+    if(count >= 50000):
         break
 
 scorer = ScorerStepByStep(validationFileDirectory)
 results = scorer.score(trialModel)
+
+print("\nResults:")
+print(f"Mean Weighted Pearson correlation: {results['weighted_pearson']:.6f}")
+for i, target in enumerate(scorer.targets):
+    print(f"  {target}: {results[target]:.6f}")
