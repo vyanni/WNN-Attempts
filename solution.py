@@ -12,13 +12,21 @@ import numpy as np
 import pandas as pd
 import pyarrow as pyarrow
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(f"{CURRENT_DIR}/..")
+ONLINE_NOTEBOOK = True
 
-trainingFileDirectory = f"{CURRENT_DIR}\\datasets\\train.parquet"
+if ONLINE_NOTEBOOK:
+    trainingFileDirectory = "/kaggle/input//train.parquet"
+    validationFileDirectory = "/kaggle/input//valid.parquet"
+    CHECKPOINT_DIR = "/kaggle/working/"
+else:
+    CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    sys.path.append(f"{CURRENT_DIR}/..")
+
+    trainingFileDirectory = f"{CURRENT_DIR}\\datasets\\train.parquet"
+    validationFileDirectory = f"{CURRENT_DIR}\\datasets\\valid.parquet"
+
+
 trainingFile = pd.read_parquet(trainingFileDirectory)
-
-validationFileDirectory = f"{CURRENT_DIR}\\datasets\\valid.parquet"
 validationFile = pd.read_parquet(validationFileDirectory)
 
 class PredictionModel:
@@ -134,7 +142,7 @@ class PredictionModel:
             valPearson = self.validator.score(self) 
             if valPearson > bestvalPearson:
                 bestvalPearson = valPearson
-                
+
                 self.saveParameters('bestParams.pt', epoch, valPearson)
                 print(f"Best model with Pearson: {valPearson:.6f}")
 
@@ -196,8 +204,10 @@ if __name__ == "__main__":
         trialModel = PredictionModel()
         trialModel.training(trainingFile, 50, 32)
 
-        if os.path.exists('bestParams.pt'):
-            trialModel.loadParameters('bestParams.pt')
+        checkpoint_path = f'{CHECKPOINT_DIR}bestParams.pt'
+        if os.path.exists(checkpoint_path):
+            print(f"\nLoading best model from {checkpoint_path}...")
+            trialModel.loadParameters(checkpoint_path)
 
         scorer = ScorerStepByStep(validationFileDirectory)
         
