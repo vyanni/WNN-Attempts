@@ -88,7 +88,7 @@ class AttentionHead(nn.Module):
         
         #Create upper matrix mask for the top right, preventing the transformer from taking into account a token's relation to a future token 
         self.matriceMask = torch.tril(torch.ones(maxLength, maxLength))
-        self.register_buffer("matriceMask", self.matriceMask)
+        self.register_buffer("matrixMask", self.matriceMask)
 
     def forward(self, marketStateBatch):
         seqLength = marketStateBatch.shape[0]

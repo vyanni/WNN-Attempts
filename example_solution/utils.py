@@ -81,13 +81,14 @@ class ScorerStepByStep:
         self.features = self.dataset.columns[3:35]
         self.targets = self.dataset.columns[35:]
 
-    def score(self, model: PredictionModel) -> dict:
+    def score(self, model: PredictionModel, training) -> dict:
         predictions = []
         targets = []
 
         prediction = None
 
         # Iterate over numpy array for speed
+        count = 0
         for row in tqdm(self.dataset.values):
             seq_ix = row[0]
             step_in_seq = row[1]
@@ -102,6 +103,10 @@ class ScorerStepByStep:
             if prediction is not None:
                 predictions.append(prediction)
                 targets.append(labels)
+
+            count += 1
+            if(training == True and count >= 5000):
+                break
             
         # report metrics
         return self.calc_metrics(np.array(predictions), np.array(targets))

@@ -11,8 +11,9 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 import pyarrow as pyarrow
+from tqdm import tqdm
 
-ONLINE_NOTEBOOK = True
+ONLINE_NOTEBOOK = False
 
 if ONLINE_NOTEBOOK:
     trainingFileDirectory = "/kaggle/input//train.parquet"
@@ -24,6 +25,7 @@ else:
 
     trainingFileDirectory = f"{CURRENT_DIR}\\datasets\\train.parquet"
     validationFileDirectory = f"{CURRENT_DIR}\\datasets\\valid.parquet"
+    CHECKPOINT_DIR = f"{CURRENT_DIR}"
 
 
 trainingFile = pd.read_parquet(trainingFileDirectory)
@@ -91,7 +93,7 @@ class PredictionModel:
         
         bestvalPearson = -1.0
 
-        for epoch in range(numEpochs):
+        for epoch in tqdm(range(numEpochs), desc = "Epochs: ", position = 0, leave = True):
             # Training phase
             self.currentTransformer.train()
             self.marketStateCompressor.train()
@@ -101,7 +103,7 @@ class PredictionModel:
             train_loss = 0.0
             num_batches = 0
             
-            for batchStart in range(0, len(trainingSequences), batches):
+            for batchStart in tqdm(range(0, len(trainingSequences), batches), desc = f"Batch: {num_batches}", position = 0, leave = False):
                 batchEnd = min(batchStart + batches, len(trainingSequences))
                 batch = trainingSequences[batchStart:batchEnd]
                 
@@ -112,7 +114,8 @@ class PredictionModel:
                     targetValues = torch.tensor(sample['target'], dtype=torch.float32).to(self.device)
                     
                     transformerOutput = self.currentTransformer(contextWindow)
-                    lastTimeStep = transformerOutput[-1, :]
+                    transformerOutput = transformerOutput.to(self.device)
+                    lastTimeStep = transformerOutput[-1, :].to(self.device) 
                     prediction = self.marketStateCompressor(lastTimeStep)
                     prediction = torch.clamp(prediction, -6.0, 6.0)
                     
@@ -136,15 +139,32 @@ class PredictionModel:
                 self.optimizer.step()
                 train_loss += batch_loss.item()
                 num_batches += 1
+
+                if(num_batches % 10 == 0):                
+                    valPearson = self.validator.score(self, True) 
+                    print(f"Mean Weighted Pearson correlation for Batch {num_batches}: {valPearson['weighted_pearson']:.6f}")
+                    for i, target in enumerate(self.validator.targets):
+                        print(f"  {target}: {valPearson[target]:.6f}")
+                    
+                    weightedPearson = valPearson['weighted_pearson']
+                    if weightedPearson > bestvalPearson:
+                        bestvalPearson = weightedPearson
+
+                        self.saveParameters('bestParams.pt', epoch, weightedPearson)
+                        print(f"Best model with Pearson: {weightedPearson:.6f}")
+                    
+                    break
             
             train_loss /= num_batches 
 
-            valPearson = self.validator.score(self) 
-            if valPearson > bestvalPearson:
-                bestvalPearson = valPearson
+            break
+            valPearson = self.validator.score(self, True) 
+            weightedPearson = valPearson['weighted_pearson']
+            if weightedPearson > bestvalPearson:
+                bestvalPearson = weightedPearson
 
-                self.saveParameters('bestParams.pt', epoch, valPearson)
-                print(f"Best model with Pearson: {valPearson:.6f}")
+                self.saveParameters('bestParams.pt', epoch, weightedPearson)
+                print(f"Best model with Pearson: {weightedPearson:.6f}")
 
     def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
         if self.current_seq_ix != currentSeq.seq_ix:
@@ -204,15 +224,15 @@ if __name__ == "__main__":
         trialModel = PredictionModel()
         trialModel.training(trainingFile, 50, 32)
 
-        checkpoint_path = f'{CHECKPOINT_DIR}bestParams.pt'
-        if os.path.exists(checkpoint_path):
-            print(f"\nLoading best model from {checkpoint_path}...")
-            trialModel.loadParameters(checkpoint_path)
+        #checkpoint_path = f'{CHECKPOINT_DIR}bestParams.pt'
+        #if os.path.exists(checkpoint_path):
+        #    print(f"\nLoading best model from {checkpoint_path}...")
+        #    trialModel.loadParameters(checkpoint_path)
 
         scorer = ScorerStepByStep(validationFileDirectory)
         
         print("Testing Transformer...")
-        results = scorer.score(trialModel)
+        results = scorer.score(trialModel, True)
         
         print("\nResults:")
         print(f"Mean Weighted Pearson correlation: {results['weighted_pearson']:.6f}")
