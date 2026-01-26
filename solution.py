@@ -58,18 +58,31 @@ class PredictionModel:
         self.mseLossFunction = nn.MSELoss()
         self.huberLossFunction = nn.HuberLoss(delta = 0.3)
 
-        allParameters = (
+        self.allParameters = (
             list(self.currentTransformer.parameters()) + 
             list(self.marketStateCompressor.parameters())
         )
 
-        self.optimizer = torch.optim.Adam(allParameters, lr=0.005) 
+        self.optimizer = torch.optim.Adam(self.allParameters, lr=0.0001) 
         self.validator = ScorerStepByStep(validationFileDirectory)
 
+        self.scaler = torch.cuda.amp.GradScaler()
 
-    def training(self, trainingFile, numEpochs, batches):
-        trainingSequences = []
+        self.currentTransformer = torch.compile(
+            self.currentTransformer,
+            mode="max-autotune"
+        )
+
+        self.marketStateCompressor = torch.compile(
+            self.marketStateCompressor,
+            mode="max-autotune"
+        )
+
+    def batchGenerator(self, trainingFile, batchSize):
+        contextWindows, targetValue = [], []
         unique_seqs = trainingFile['seq_ix'].unique()
+
+        np.random.shuffle(unique_seqs)
         
         for seq_ix in unique_seqs:
             seq_data = trainingFile[trainingFile['seq_ix'] == seq_ix].sort_values('step_in_seq')
@@ -85,12 +98,17 @@ class PredictionModel:
                         padding = np.zeros((100 - len(contextWindow), contextWindow.shape[1]))
                         contextWindow = np.vstack([padding, contextWindow])
                     
-                    trainingSequences.append({
-                        'context': contextWindow,
-                        'target': targetValues[i]
-                    })
+                    contextWindows.append(contextWindow)
+                    targetValue.append(targetValues[i])
+                
+                if len(contextWindows) == batchSize:
+                    yield contextWindows, targetValue
+                    contextWindows, targetValue = [], []
 
-        
+        if contextWindow:
+            yield contextWindows, targetValue
+
+    def training(self, numEpochs, batchSize): 
         bestvalPearson = -1.0
 
         for epoch in tqdm(range(numEpochs), desc = "Epochs: ", position = 0, leave = True):
@@ -98,24 +116,25 @@ class PredictionModel:
             self.currentTransformer.train()
             self.marketStateCompressor.train()
             
-            # Shuffle and batch
-            np.random.shuffle(trainingSequences)
-            train_loss = 0.0
-            num_batches = 0
-            
-            for batchStart in tqdm(range(0, len(trainingSequences), batches), desc = f"Batch: {num_batches}", position = 0, leave = False):
-                batchEnd = min(batchStart + batches, len(trainingSequences))
-                batch = trainingSequences[batchStart:batchEnd]
-                
-                self.optimizer.zero_grad()
-                batch_loss = 0.0
-                for sample in batch:
-                    contextWindow = torch.tensor(sample['context'], dtype=torch.float32).to(self.device)
-                    targetValues = torch.tensor(sample['target'], dtype=torch.float32).to(self.device)
-                    
+            numBatches = 0
+
+            with tqdm(total = )
+            for contexts_np, targets_np in self.batchGenerator(trainingFile, batchSize):
+
+                contextWindow = torch.tensor(
+                    contexts_np, dtype=torch.float32, device=self.device
+                )
+
+                targetValues = torch.tensor(
+                    targets_np, dtype=torch.float32, device=self.device
+                )
+
+
+                self.optimizer.zero_grad(set_to_none = True)
+                with torch.cuda.amp.autocast():
                     transformerOutput = self.currentTransformer(contextWindow)
-                    transformerOutput = transformerOutput.to(self.device)
-                    lastTimeStep = transformerOutput[-1, :].to(self.device) 
+                    lastTimeStep = transformerOutput[:, -1, :]
+
                     prediction = self.marketStateCompressor(lastTimeStep)
                     prediction = torch.clamp(prediction, -6.0, 6.0)
                     
@@ -123,26 +142,17 @@ class PredictionModel:
                                  (self.mseLossFunction(prediction, targetValues) * 0.4) + 
                                  (self.huberLossFunction(prediction, targetValues) * 0.3)
                     )
+                
+                self.scaler.scale(lossValue).backward()
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.allParameters, 1.0)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                numBatches += 1
 
-                    batch_loss += lossValue
-                
-                batch_loss = batch_loss / len(batch)
-                batch_loss.backward()
-                
-                # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(
-                    list(self.currentTransformer.parameters()) + 
-                    list(self.marketStateCompressor.parameters()), 
-                    max_norm=1.0
-                )
-                
-                self.optimizer.step()
-                train_loss += batch_loss.item()
-                num_batches += 1
-
-                if(num_batches % 10 == 0):                
+                if(numBatches % 150 == 0):                
                     valPearson = self.validator.score(self, True) 
-                    print(f"Mean Weighted Pearson correlation for Batch {num_batches}: {valPearson['weighted_pearson']:.6f}")
+                    print(f"Mean Weighted Pearson correlation for Batch {numBatches}: {valPearson['weighted_pearson']:.6f}")
                     for i, target in enumerate(self.validator.targets):
                         print(f"  {target}: {valPearson[target]:.6f}")
                     
@@ -152,12 +162,7 @@ class PredictionModel:
 
                         self.saveParameters('bestParams.pt', epoch, weightedPearson)
                         print(f"Best model with Pearson: {weightedPearson:.6f}")
-                    
-                    break
-            
-            train_loss /= num_batches 
 
-            break
             valPearson = self.validator.score(self, True) 
             weightedPearson = valPearson['weighted_pearson']
             if weightedPearson > bestvalPearson:

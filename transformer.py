@@ -98,7 +98,7 @@ class AttentionHead(nn.Module):
         #It takes in the 100x32 vector, where its 32 dimensions by 100 tokens, then multiplies each token in each row
         #By the query, key, and value weights where it comes out as a 100x32 vector, same size etc    
 
-        attentionScores = torch.matmul(query, torch.transpose(key, 0, 1)) / np.sqrt(self.dimensionSize)
+        attentionScores = torch.matmul(query, key.transpose(-2, -1)) / np.sqrt(self.dimensionSize)
         
         mask = self.matriceMask[:seqLength, :seqLength]
         attentionScores = attentionScores.masked_fill(mask == 0, float('-inf'))
