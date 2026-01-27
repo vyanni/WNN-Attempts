@@ -195,9 +195,12 @@ class PredictionModel:
         #The transformer always takes in a 100x32 vector, where each row of 1x32 is 1 token
         #Its declared as (rows, columns), but mathematically, its columns x rows
 
+        inputWindow = self.sequence_history[-100:]
+        inputWindow = torch.from_numpy(inputWindow).unsqueeze(0).float().to(self.device)
+        
         with torch.no_grad():
             self.currentTransformer.eval()
-            transformerOutput = self.currentTransformer(self.sequence_history[-100:, :])
+            transformerOutput = self.currentTransformer(inputWindow)
             #Goes through the whole transformer process, with attention etc, outputs 100x32 matrix
 
             lastTimeStep = transformerOutput[-1, :]

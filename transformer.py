@@ -49,7 +49,7 @@ class PositionalEncoding(nn.Module):
         positionalWeights = self.adaptivePositionAttention(marketStateBatch)
 
         encodingVector = (
-            ((self.sinusodialEncoded * self.sinsusodialWeight) + 
+            ((self.sinEncoding * self.sinsusodialWeight) + 
             (self.learnableEncoded * self.learnableWeight)) * 
             (positionalWeights)
         )
@@ -74,68 +74,68 @@ class FeatureAttention(nn.Module):
 
         return importantFeatures
 
-class AttentionHead(nn.Module):
-    def __init__(self, dimensionSize, attentionHeadOutputDimension, maxLength = 100):
-        super(AttentionHead, self).__init__()
-        self.dimensionSize = dimensionSize
-        self.attentionHeadOutputDimension = attentionHeadOutputDimension
+#class AttentionHead(nn.Module):
+#    def __init__(self, dimensionSize, attentionHeadOutputDimension, maxLength = 100):
+#        super(AttentionHead, self).__init__()
+#        self.dimensionSize = dimensionSize
+#        self.attentionHeadOutputDimension = attentionHeadOutputDimension
         #The attention head calculates the key, query, and value vectors for an encoded input vector
         #These are done just by doing a linear multiplication with qkv weight matrices
 
-        self.queryWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
-        self.keyWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
-        self.valueWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
+#        self.queryWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
+#        self.keyWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
+#        self.valueWeights = nn.Linear(self.dimensionSize, self.attentionHeadOutputDimension)
         
         #Create upper matrix mask for the top right, preventing the transformer from taking into account a token's relation to a future token 
-        self.matriceMask = torch.tril(torch.ones(maxLength, maxLength))
-        self.register_buffer("matrixMask", self.matriceMask)
+#        self.matriceMask = torch.tril(torch.ones(maxLength, maxLength))
+#        self.register_buffer("matrixMask", self.matriceMask)
 
-    def forward(self, marketStateBatch):
-        seqLength = marketStateBatch.shape[0]
-        query = self.queryWeights(marketStateBatch)
-        key = self.keyWeights(marketStateBatch)
-        value = self.valueWeights(marketStateBatch)
+#    def forward(self, marketStateBatch):
+#        seqLength = marketStateBatch.shape[0]
+#        query = self.queryWeights(marketStateBatch)
+#        key = self.keyWeights(marketStateBatch)
+#        value = self.valueWeights(marketStateBatch)
         #It takes in the 100x32 vector, where its 32 dimensions by 100 tokens, then multiplies each token in each row
         #By the query, key, and value weights where it comes out as a 100x32 vector, same size etc    
 
-        attentionScores = torch.matmul(query, key.transpose(-2, -1)) / np.sqrt(self.dimensionSize)
+#        attentionScores = torch.matmul(query, key.transpose(-2, -1)) / np.sqrt(self.dimensionSize)
         
-        mask = self.matriceMask[:seqLength, :seqLength]
-        attentionScores = attentionScores.masked_fill(mask == 0, float('-inf'))
+#        mask = self.matriceMask[:seqLength, :seqLength]
+#       attentionScores = attentionScores.masked_fill(mask == 0, float('-inf'))
         
-        attentionOutput = F.softmax(attentionScores, dim=-1)
+#       attentionOutput = F.softmax(attentionScores, dim=-1)
         # It then takes the query, multiplies it by the transpose of the key vector (matrix with all the tokens together)
         # It divides it by the square root of the dimensions just to keep it from bloating up, then softmaxes it
         
         # Handle NaN from softmax of all -inf
-        attentionOutput = torch.nan_to_num(attentionOutput, 0.0)
+#        attentionOutput = torch.nan_to_num(attentionOutput, 0.0)
 
-        output = torch.matmul(attentionOutput, value)
+#        output = torch.matmul(attentionOutput, value)
         #Dot products the softmax and the value in order to get the output, another 100x32 matrix
 
-        return output
+#        return output
     
-class MultiheadAttention(nn.Module):
-    def __init__(self, numHeads, dimensionSize, attentionHeadOutputDimension, maxLength = 100):
-        super(MultiheadAttention, self).__init__()
-        self.dimensionSize = dimensionSize
-        self.numHeads = numHeads
-        self.attentionHeadOutputDimension = attentionHeadOutputDimension
+#class MultiheadAttention(nn.Module):
+#    def __init__(self, numHeads, dimensionSize, attentionHeadOutputDimension, maxLength = 100):
+#        super(MultiheadAttention, self).__init__()
+#        self.dimensionSize = dimensionSize
+#        self.numHeads = numHeads
+#        self.attentionHeadOutputDimension = attentionHeadOutputDimension
 
-        self.attentionHeads = nn.ModuleList([AttentionHead(self.dimensionSize, self.attentionHeadOutputDimension, maxLength = 100) for i in range(numHeads)])
-        self.finalLinear = nn.Linear(numHeads * attentionHeadOutputDimension, attentionHeadOutputDimension)
+#        self.attentionHeads = nn.ModuleList([AttentionHead(self.dimensionSize, self.attentionHeadOutputDimension, maxLength = 100) for i in range(numHeads)])
+#        self.finalLinear = nn.Linear(numHeads * attentionHeadOutputDimension, attentionHeadOutputDimension)
 
-    def forward(self, marketStateBatch):
-        outputArray = [head(marketStateBatch) for head in self.attentionHeads]
+#    def forward(self, marketStateBatch):
+#        outputArray = [head(marketStateBatch) for head in self.attentionHeads]
         #Calculates the attention for each head, will probably do around 8
 
-        concatenatedHeads = torch.cat(outputArray, dim=-1)
-        finalOutput = self.finalLinear(concatenatedHeads)
+#        concatenatedHeads = torch.cat(outputArray, dim=-1)
+#        finalOutput = self.finalLinear(concatenatedHeads)
         #Concatenates it, so there's an array of 100x32 matrices, takes each one and pushes them together to be a
         #100x(32*number of heads) long matrix, then another linear transformation brings it back to 100x32 matrix
         #So this still returns a 100x32 matrix
 
-        return finalOutput
+#        return finalOutput
 
 class Encoder(nn.Module):
     def __init__(self, numHeads, dimensionSize, attentionHeadOutputDimension, feedforward_dimensions):
@@ -145,7 +145,10 @@ class Encoder(nn.Module):
         self.attentionHeadOutputDimension = attentionHeadOutputDimension
         self.feedForward_dimensions = feedforward_dimensions
 
-        self.attention = MultiheadAttention(self.numHeads, self.dimensionSize, self.attentionHeadOutputDimension, maxLength = 100)
+        self.attention = nn.MultiheadAttention(embed_dim=32,
+            num_heads=8,
+            batch_first=True
+        )
 
         self.feedForward = nn.Sequential(
             nn.Linear(attentionHeadOutputDimension, feedforward_dimensions),
@@ -157,7 +160,7 @@ class Encoder(nn.Module):
         self.normalizationLayer2 = nn.LayerNorm(attentionHeadOutputDimension)
 
     def forward(self, marketStateBatch):
-        attentionOutput = self.attention(marketStateBatch)
+        attentionOutput, _ = self.attention(marketStateBatch, marketStateBatch, marketStateBatch, need_weights = False)
         attentionOutput = self.normalizationLayer1(attentionOutput + marketStateBatch)
 
         finalAttention = self.feedForward(attentionOutput)
@@ -224,11 +227,12 @@ class TransformerBlock(nn.Module):
         # Add positional encoding
         inputTokens = self.positionEncoder(inputTokens)
         
-        # Temporal convolution
-        inputtoCNN = inputTokens.unsqueeze(0).transpose(1, 2)  # Add batch dim and transpose for conv1d
+        inputtoCNN = inputTokens.transpose(1, 2)  # Add batch dim and transpose for conv1d
+        
         cnnOutput = torch.relu(self.cnnLayer(inputtoCNN))
         inputtoCNN =inputtoCNN + cnnOutput  # Residual
-        inputtoCNN = inputtoCNN.transpose(1, 2).squeeze(0)  # Remove batch dim
+        
+        inputtoCNN = inputtoCNN.transpose(1, 2)
         inputTokens = self.convNormalization(inputtoCNN)
         
         # Transformer layers
