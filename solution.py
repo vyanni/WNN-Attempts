@@ -105,8 +105,14 @@ class PredictionModel:
                     yield contextWindows, targetValue
                     contextWindows, targetValue = [], []
 
-        if contextWindow:
+        if contextWindows:
             yield contextWindows, targetValue
+    
+    def batchesCount(self, trainingFile, batchSize):
+        count = 0
+        for _ in self.batchGenerator(trainingFile, batchSize):
+            count += 1
+        return count
 
     def training(self, numEpochs, batchSize): 
         bestvalPearson = -1.0
@@ -117,51 +123,54 @@ class PredictionModel:
             self.marketStateCompressor.train()
             
             numBatches = 0
+            totalBatches = self.batchesCount(trainingFile, batchSize)
 
-            with tqdm(total = )
-            for contexts_np, targets_np in self.batchGenerator(trainingFile, batchSize):
+            with tqdm(total = totalBatches, desc = "Total Batches: ") as pbar:
+                for contexts_np, targets_np in self.batchGenerator(trainingFile, batchSize):
 
-                contextWindow = torch.tensor(
-                    contexts_np, dtype=torch.float32, device=self.device
-                )
-
-                targetValues = torch.tensor(
-                    targets_np, dtype=torch.float32, device=self.device
-                )
-
-
-                self.optimizer.zero_grad(set_to_none = True)
-                with torch.cuda.amp.autocast():
-                    transformerOutput = self.currentTransformer(contextWindow)
-                    lastTimeStep = transformerOutput[:, -1, :]
-
-                    prediction = self.marketStateCompressor(lastTimeStep)
-                    prediction = torch.clamp(prediction, -6.0, 6.0)
-                    
-                    lossValue = ((self.l1LossFunction(prediction, targetValues) * 0.3) + 
-                                 (self.mseLossFunction(prediction, targetValues) * 0.4) + 
-                                 (self.huberLossFunction(prediction, targetValues) * 0.3)
+                    contextWindow = torch.tensor(
+                        contexts_np, dtype=torch.float32, device=self.device
                     )
-                
-                self.scaler.scale(lossValue).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.allParameters, 1.0)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                numBatches += 1
 
-                if(numBatches % 150 == 0):                
-                    valPearson = self.validator.score(self, True) 
-                    print(f"Mean Weighted Pearson correlation for Batch {numBatches}: {valPearson['weighted_pearson']:.6f}")
-                    for i, target in enumerate(self.validator.targets):
-                        print(f"  {target}: {valPearson[target]:.6f}")
+                    targetValues = torch.tensor(
+                        targets_np, dtype=torch.float32, device=self.device
+                    )
+
+
+                    self.optimizer.zero_grad(set_to_none = True)
+                    with torch.cuda.amp.autocast():
+                        transformerOutput = self.currentTransformer(contextWindow)
+                        lastTimeStep = transformerOutput[:, -1, :]
+
+                        prediction = self.marketStateCompressor(lastTimeStep)
+                        prediction = torch.clamp(prediction, -6.0, 6.0)
                     
-                    weightedPearson = valPearson['weighted_pearson']
-                    if weightedPearson > bestvalPearson:
-                        bestvalPearson = weightedPearson
+                        lossValue = ((self.l1LossFunction(prediction, targetValues) * 0.3) + 
+                                     (self.mseLossFunction(prediction, targetValues) * 0.4) + 
+                                     (self.huberLossFunction(prediction, targetValues) * 0.3)
+                        )
+                
+                    self.scaler.scale(lossValue).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.allParameters, 1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
 
-                        self.saveParameters('bestParams.pt', epoch, weightedPearson)
-                        print(f"Best model with Pearson: {weightedPearson:.6f}")
+                    numBatches += 1
+                    pbar.update(1)
+
+                    if(numBatches % 150 == 0):                
+                        valPearson = self.validator.score(self, True) 
+                        print(f"Mean Weighted Pearson correlation for Batch {numBatches}: {valPearson['weighted_pearson']:.6f}")
+                        for i, target in enumerate(self.validator.targets):
+                            print(f"  {target}: {valPearson[target]:.6f}")
+                    
+                        weightedPearson = valPearson['weighted_pearson']
+                        if weightedPearson > bestvalPearson:
+                            bestvalPearson = weightedPearson
+
+                            self.saveParameters('bestParams.pt', epoch, weightedPearson)
+                            print(f"Best model with Pearson: {weightedPearson:.6f}")
 
             valPearson = self.validator.score(self, True) 
             weightedPearson = valPearson['weighted_pearson']
