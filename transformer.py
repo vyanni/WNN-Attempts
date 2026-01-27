@@ -6,6 +6,15 @@ import numpy as np
 import pandas as pd
 import pyarrow as pyarrow
 
+import gc
+import torch
+
+# Clear memory from previous runs
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
+
 class PositionalEncoding(nn.Module):
     def __init__(self, dimensionSize = 32, timeLength = 100, dropout = 0.1):
         super().__init__()
@@ -49,10 +58,10 @@ class PositionalEncoding(nn.Module):
         positionalWeights = self.adaptivePositionAttention(marketStateBatch)
 
         encodingVector = (
-            ((self.sinusodialEncoded * self.sinsusodialWeight) + 
+            ((self.sinEncoding * self.sinsusodialWeight) + 
             (self.learnableEncoded * self.learnableWeight)) * 
             (positionalWeights)
-        )
+        ).to(marketStateBatch.device)
 
         encodingVector = (marketStateBatch + encodingVector)
         return encodingVector
@@ -98,15 +107,15 @@ class AttentionHead(nn.Module):
         #It takes in the 100x32 vector, where its 32 dimensions by 100 tokens, then multiplies each token in each row
         #By the query, key, and value weights where it comes out as a 100x32 vector, same size etc    
 
-        attentionScores = torch.matmul(query, key.transpose(-2, -1)) / np.sqrt(self.dimensionSize)
+        attentionScores = torch.matmul(query, torch.transpose(key, 0, 1)) / np.sqrt(self.dimensionSize)
         
-        mask = self.matriceMask[:seqLength, :seqLength]
+        mask = self.matriceMask[:seqLength, :seqLength].to(attentionScores.device)
         attentionScores = attentionScores.masked_fill(mask == 0, float('-inf'))
         
         attentionOutput = F.softmax(attentionScores, dim=-1)
         # It then takes the query, multiplies it by the transpose of the key vector (matrix with all the tokens together)
         # It divides it by the square root of the dimensions just to keep it from bloating up, then softmaxes it
-        
+        \
         # Handle NaN from softmax of all -inf
         attentionOutput = torch.nan_to_num(attentionOutput, 0.0)
 

@@ -1,8 +1,7 @@
 import os
 import sys
 
-from example_solution.utils import DataPoint, ScorerStepByStep, weighted_pearson_correlation
-import transformer
+#from example_solution.utils import DataPoint, ScorerStepByStep, weighted_pearson_correlation
 
 import torch as torch
 import torch.nn as nn
@@ -11,13 +10,14 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 import pyarrow as pyarrow
-from tqdm import tqdm
 
-ONLINE_NOTEBOOK = False
+from tqdm.auto import tqdm
+
+ONLINE_NOTEBOOK = True
 
 if ONLINE_NOTEBOOK:
-    trainingFileDirectory = "/kaggle/input//train.parquet"
-    validationFileDirectory = "/kaggle/input//valid.parquet"
+    trainingFileDirectory = "/kaggle/input/lob-datasets/train.parquet"
+    validationFileDirectory = "/kaggle/input/lob-datasets/valid.parquet"
     CHECKPOINT_DIR = "/kaggle/working/"
 else:
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -25,7 +25,6 @@ else:
 
     trainingFileDirectory = f"{CURRENT_DIR}\\datasets\\train.parquet"
     validationFileDirectory = f"{CURRENT_DIR}\\datasets\\valid.parquet"
-    CHECKPOINT_DIR = f"{CURRENT_DIR}"
 
 
 trainingFile = pd.read_parquet(trainingFileDirectory)
@@ -33,11 +32,11 @@ validationFile = pd.read_parquet(validationFileDirectory)
 
 class PredictionModel:
     def __init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('cuda')# if torch.cuda.is_available() else 'cpu')
         self.current_seq_ix = None
         self.sequence_history = []
 
-        self.currentTransformer = transformer.TransformerBlock(
+        self.currentTransformer = TransformerBlock(
             numLayers = 8, 
             numHeads = 8, 
             dimensionSize = 32, 
@@ -45,7 +44,7 @@ class PredictionModel:
             feedforward_dimensions = 256
         )
 
-        self.marketStateCompressor = transformer.HighwayNetwork(
+        self.marketStateCompressor = HighwayNetwork(
             dimensionSize = 32, 
             outputDimensions = 2
         )
@@ -66,16 +65,16 @@ class PredictionModel:
         self.optimizer = torch.optim.Adam(self.allParameters, lr=0.0001) 
         self.validator = ScorerStepByStep(validationFileDirectory)
 
-        self.scaler = torch.cuda.amp.GradScaler()
-
         self.currentTransformer = torch.compile(
             self.currentTransformer,
-            mode="max-autotune"
+            mode="max-autotune",
+            dynamic = False
         )
 
         self.marketStateCompressor = torch.compile(
             self.marketStateCompressor,
-            mode="max-autotune"
+            mode="max-autotune",
+            dynamic = False
         )
 
     def batchGenerator(self, trainingFile, batchSize):
@@ -114,7 +113,7 @@ class PredictionModel:
             count += 1
         return count
 
-    def training(self, numEpochs, batchSize): 
+    def training(self, trainingFile, numEpochs, batchSize): 
         bestvalPearson = -1.0
 
         for epoch in tqdm(range(numEpochs), desc = "Epochs: ", position = 0, leave = True):
@@ -179,13 +178,12 @@ class PredictionModel:
 
                 self.saveParameters('bestParams.pt', epoch, weightedPearson)
                 print(f"Best model with Pearson: {weightedPearson:.6f}")
-
+    
     def predict(self, currentSeq: DataPoint) -> np.ndarray | None:
         if self.current_seq_ix != currentSeq.seq_ix:
             self.current_seq_ix = currentSeq.seq_ix
-            self.sequence_history = torch.empty(0, 32, dtype=torch.float32).to(self.device)
         
-        pytorchMarketState = torch.tensor(currentSeq.state.copy(), dtype=torch.float32).unsqueeze(0)
+        pytorchMarketState = torch.tensor(currentSeq.state.copy(), dtype=torch.float32).unsqueeze(0).to(self.device)
         self.sequence_history = torch.cat([self.sequence_history, pytorchMarketState], dim = 0)
 
         if not currentSeq.need_prediction:
@@ -218,6 +216,7 @@ class PredictionModel:
             'compressorState': self.marketStateCompressor.state_dict(),
             'optimizerState': self.optimizer.state_dict(),
             'pearsonCoefficient': valPearson,
+            'device': self.device,
             'config': {
                 'numLayers': 8,
                 'numHeads': 8,
@@ -229,28 +228,7 @@ class PredictionModel:
         torch.save(checkpoint, filename)
 
     def loadParameters(self, filename):
-        checkpoint = torch.load(filename, map_location = self.device)
+        checkpoint = torch.load(filename, map_location = self.device, weights_only = False)
         self.currentTransformer.load_state_dict(checkpoint['modelState'])
         self.marketStateCompressor.load_state_dict(checkpoint['compressorState'])
-
-if __name__ == "__main__":
-    if os.path.exists(validationFileDirectory):
-        trialModel = PredictionModel()
-        trialModel.training(trainingFile, 50, 32)
-
-        #checkpoint_path = f'{CHECKPOINT_DIR}bestParams.pt'
-        #if os.path.exists(checkpoint_path):
-        #    print(f"\nLoading best model from {checkpoint_path}...")
-        #    trialModel.loadParameters(checkpoint_path)
-
-        scorer = ScorerStepByStep(validationFileDirectory)
-        
-        print("Testing Transformer...")
-        results = scorer.score(trialModel, True)
-        
-        print("\nResults:")
-        print(f"Mean Weighted Pearson correlation: {results['weighted_pearson']:.6f}")
-        for i, target in enumerate(scorer.targets):
-            print(f"  {target}: {results[target]:.6f}")
-    else:
-        print("Valid parquet not found for testing.")
+        self.optimizer.load_state_dict(checkpoint['optimizerState'])
