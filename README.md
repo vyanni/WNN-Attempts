@@ -42,7 +42,7 @@ python solution.py
 
 2 target outputs: t0 and t1 (future price movement indicators)
 
-## 🏗️ Model Architecture
+## Model Architecture
 
 **Core Components**:
 - **PositionalEncoding**: Sinusoidal + learnable embeddings with adaptive weighting
@@ -92,7 +92,7 @@ Creates `fullModel.onnx` (~50 MB) for fast inference (2-5x speedup compared to P
 
 **Advantages**: Framework-agnostic, optimized runtime, works on CPU/GPU/mobile, ~13 MB quantized.
 
-## 📈 Evaluation & Metrics
+## Evaluation & Metrics
 
 **Evaluate on Validation Data**:
 ```bash
